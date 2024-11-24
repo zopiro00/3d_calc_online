@@ -4,9 +4,21 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const { exec } = require('child_process');
-
 const app = express();
 require('dotenv').config();
+
+// Validate Environment Variables
+const REQUIRED_ENV_VARS = ['PRUSA_SLICER_PATH', 'PORT'];
+
+REQUIRED_ENV_VARS.forEach((envVar) => {
+  if (!process.env[envVar]) {
+    console.error(`ERROR: Missing required environment variable: ${envVar}`);
+    process.exit(1); // Exit the application if a required variable is missing
+  }
+});
+
+// Environment variables from .env file
+const PRUSA_SLICER_PATH = process.env.PRUSA_SLICER_PATH;
 const PORT = process.env.PORT || 5001;
 
 // Function to escape file paths for CLI commands
@@ -41,8 +53,8 @@ support_material = ${supports === 'yes' ? 1 : 0}
   return configPath; // Return the path to the config file
 };
 
-// Processes the GCODE File to obtain the estimated time of the printing.
-const parseGCodeForTime = (gcodePath) => {
+// Processes the GCODE File to obtain the estimated time and filament used
+const parseGCodeForTimeAndFilament = (gcodePath) => {
   return new Promise((resolve, reject) => {
     fs.readFile(gcodePath, 'utf8', (err, data) => {
       if (err) {
@@ -56,10 +68,80 @@ const parseGCodeForTime = (gcodePath) => {
       );
       const estimatedTime = timeMatch ? timeMatch[1] : 'Unknown';
 
+      // Search for the filament used
+      const filamentMatch = data.match(/; filament used \[mm\] = ([\d.]+)/i);
+      const filamentUsed = filamentMatch ? parseFloat(filamentMatch[1]) : 0;
+
       console.log('Estimated time parsed from G-code:', estimatedTime);
-      resolve(estimatedTime);
+      console.log('Filament used parsed from G-code:', filamentUsed);
+
+      resolve({ estimatedTime, filamentUsed });
     });
   });
+};
+
+// Pricing logic based on material, quality, and supports
+const calculatePrice = (
+  { filamentUsed, estimatedTime },
+  material,
+  quality,
+  supports
+) => {
+  // Material costs (per cubic centimetre)
+  const materialCosts = {
+    PLA: 0.05,
+    ABS: 0.07,
+    PETG: 0.06,
+  };
+
+  // Machine time cost (per hour)
+  const machineTimeCostPerHour = 1.5;
+
+  // Quality multiplier for machine time
+  const qualityMultiplier = {
+    low: 0.8, // Low quality is faster
+    medium: 1.0, // Default speed
+    high: 1.2, // High quality takes longer
+  };
+
+  // Convert filament length (mm) to weight (grams)
+  const filamentDiameter = 1.75; // mm
+  const filamentDensity = 1.24; // g/cm³ (PLA as default)
+  const filamentVolume =
+    (Math.PI * Math.pow(filamentDiameter / 2, 2) * filamentUsed) / 1000; // cm³
+  const filamentWeight = filamentVolume * filamentDensity; // grams
+
+  // Calculate the material cost
+  const materialCost = filamentWeight * (materialCosts[material] || 0.02); // Default cost if material is unknown
+
+  // Parse estimated time into hours (e.g., "1h 30m 20s")
+  const timeMatch = estimatedTime.match(/(\d+)h (\d+)m (\d+)s/);
+  const hours =
+    timeMatch && timeMatch.length === 4
+      ? parseInt(timeMatch[1]) +
+        parseInt(timeMatch[2]) / 60 +
+        parseInt(timeMatch[3]) / 3600
+      : 0;
+
+  // Calculate the machine usage cost
+  const machineUsageCost =
+    hours * machineTimeCostPerHour * qualityMultiplier[quality.toLowerCase()];
+
+  // Support material cost (10% extra material cost if supports are used)
+  const supportCost = supports.toLowerCase() === 'yes' ? materialCost * 0.1 : 0;
+
+  // Total price
+  const totalPrice = materialCost + machineUsageCost + supportCost;
+
+  console.log('>> Calculated Price Breakdown:', {
+    filamentWeight,
+    materialCost,
+    machineUsageCost,
+    supportCost,
+    totalPrice,
+  });
+
+  return totalPrice.toFixed(2); // Return total price rounded to 2 decimals
 };
 
 // This function enables PrusaSlicer to calculate the price using the software
@@ -67,7 +149,7 @@ const runPrusaSlicer = (filePath, configPath) => {
   return new Promise((resolve, reject) => {
     const absoluteFilePath = path.resolve(filePath);
     const outputGCodePath = absoluteFilePath.replace('.stl', '.gcode'); // Output G-code file
-    const command = `"/Applications/Original Prusa Drivers/PrusaSlicer.app/Contents/MacOS/PrusaSlicer" --slice --output "${outputGCodePath}" --load "${configPath}" "${absoluteFilePath}"`;
+    const command = `"${PRUSA_SLICER_PATH}" --slice --output "${outputGCodePath}" --load "${configPath}" "${absoluteFilePath}"`;
 
     console.log(`Executing slicing command: ${command}`);
 
@@ -82,15 +164,18 @@ const runPrusaSlicer = (filePath, configPath) => {
 
       console.log('>> Slicing output:', stdout);
 
-      // After slicing, parse the G-code for estimated time
-      parseGCodeForTime(outputGCodePath)
-        .then((estimatedTime) => {
-          resolve({ estimatedTime, outputGCodePath });
-          console.log('>> Estimated printing time:', estimatedTime);
+      // After slicing, parse the G-code for estimated time and filament used
+      parseGCodeForTimeAndFilament(outputGCodePath)
+        .then(({ estimatedTime, filamentUsed }) => {
+          resolve({ estimatedTime, filamentUsed, outputGCodePath });
         })
         .catch((parseError) => {
-          console.error('XX Failed to parse estimated time:', parseError);
-          resolve({ estimatedTime: 'Unknown', outputGCodePath });
+          console.error('XX Failed to parse G-code data:', parseError);
+          resolve({
+            estimatedTime: 'Unknown',
+            filamentUsed: 0,
+            outputGCodePath,
+          });
         });
     });
   });
@@ -112,7 +197,7 @@ const upload = multer({ dest: 'uploads/' });
 app.post('/calculate', upload.single('file'), async (req, res) => {
   try {
     const file = req.file;
-    const { material, quality, supports } = req.body;
+    const { material = 'PLA', quality = 'medium', supports = 'no' } = req.body;
 
     console.log('>> File received:', file);
     console.log('>> Parameters:', { material, quality, supports });
@@ -154,37 +239,44 @@ app.post('/calculate', upload.single('file'), async (req, res) => {
     );
 
     // Run PrusaSlicer and get output
-    const { estimatedTime, outputGCodePath } = await runPrusaSlicer(
-      newFilePath,
-      configPath
+    const { estimatedTime, filamentUsed, outputGCodePath } =
+      await runPrusaSlicer(newFilePath, configPath);
+
+    // Calculate price
+    const totalPrice = calculatePrice(
+      { filamentUsed, estimatedTime },
+      material,
+      quality,
+      supports
     );
 
-    // Placeholder for parsing output (to be implemented later)
-    console.log(
-      '>> Slicer Output: Slicing complete, result stored in:',
-      outputGCodePath
-    );
-    const parsedData = {}; // Replace with actual parsing logic. Solved through Run prusa?
-
-    // Placeholder for pricing logic (to be implemented later)
-    const totalPrice = 0; // Replace with actual pricing calculation logic
-
-    /// Send response
+    // Send response
     res.json({
       message: 'Slicing complete',
       estimatedTime,
-      outputGCodePath,
+      filamentUsed,
+      totalPrice,
     });
 
     // Clean up files
-    fs.unlink(newFilePath, (err) => {
-      if (err) console.error('XX Error deleting input file:', err.message);
-    });
-    fs.unlink(outputGCodePath, (err) => {
-      if (err) console.error('XX Error deleting G-code file:', err.message);
-    });
-    fs.unlink(configPath, (err) => {
-      if (err) console.error('XX Error deleting config file:', err.message);
+    Promise.all([
+      fs.promises
+        .unlink(newFilePath)
+        .catch((err) =>
+          console.error('Error deleting input file:', err.message)
+        ),
+      fs.promises
+        .unlink(outputGCodePath)
+        .catch((err) =>
+          console.error('Error deleting G-code file:', err.message)
+        ),
+      fs.promises
+        .unlink(configPath)
+        .catch((err) =>
+          console.error('Error deleting config file:', err.message)
+        ),
+    ]).then(() => {
+      console.log('All temporary files cleaned up.');
     });
   } catch (error) {
     console.error('XX Error in /calculate route:', error.message);
