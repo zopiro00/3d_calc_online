@@ -4,11 +4,13 @@ import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
 
-const ThreeDViewer = ({ fileUrl }) => {
+const ThreeDViewer = ({ fileUrl, alignToPlane, rotationX, rotationY }) => {
   const viewerRef = useRef();
 
   useEffect(() => {
     if (!fileUrl) return;
+
+    const viewerElement = viewerRef.current; // Store the ref value at the start of the effect
 
     // Create scene, camera, and renderer
     const scene = new THREE.Scene();
@@ -18,6 +20,8 @@ const ThreeDViewer = ({ fileUrl }) => {
       viewerRef.current.clientWidth,
       viewerRef.current.clientHeight
     ); // Dynamically set size
+
+    viewerElement.appendChild(renderer.domElement);
 
     viewerRef.current.appendChild(renderer.domElement);
 
@@ -98,32 +102,43 @@ const ThreeDViewer = ({ fileUrl }) => {
       );
       camera.lookAt(center); // Focus the camera on the centre of the object
 
-      //mesh.rotation.x += 0.01;
-      //mesh.rotation.y += 0.01;
+      mesh.rotation.x += 0.01;
+      mesh.rotation.y += 0.01;
 
       // Animation loop
       const animate = () => {
         requestAnimationFrame(animate);
 
-        if (mesh) {
+        /*if (mesh) {
           // Rotate the object
           mesh.rotation.x += 0.01;
           mesh.rotation.y += 0.01;
-        }
+        }*/
+
+        // Apply rotation from props
+        mesh.rotation.x = rotationX;
+        mesh.rotation.y = rotationY;
 
         renderer.render(scene, camera);
       };
 
       animate();
+
+      // Align to ground plane
+      if (alignToPlane && mesh) {
+        const box = new THREE.Box3().setFromObject(mesh);
+        const minY = box.min.y; // Get the lowest point of the model
+        mesh.position.y -= minY; // Adjust position to sit on the ground plane
+      }
     });
 
-    // Cleanup function
+    // Clean up on unmount
     return () => {
-      while (currentViewer.firstChild) {
-        currentViewer.removeChild(currentViewer.firstChild);
+      while (viewerElement.firstChild) {
+        viewerElement.removeChild(viewerElement.firstChild);
       }
     };
-  }, [fileUrl]);
+  }, [fileUrl, alignToPlane, rotationX, rotationY]);
 
   return (
     <div
