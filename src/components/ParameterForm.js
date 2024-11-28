@@ -1,5 +1,6 @@
 // src/components/ParameterForm.js
 import React, { useState } from 'react';
+import '../pages/HomePage.css';
 
 const ParameterForm = ({ onParametersChange }) => {
   const [parameters, setParameters] = useState({

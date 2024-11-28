@@ -35,9 +35,11 @@ app.post('/calculate', upload.single('file'), async (req, res) => {
     const { file } = req;
     const { material = 'PLA', quality = 'medium', supports = 'no' } = req.body;
 
+    console.log('File Received:', req.file);
+    console.log('Parameters:', req.body);
+
     const validExtensions = ['stl', 'obj', '3mf'];
     const filePath = renameFileWithExtension(file, validExtensions);
-
     const configPath = generateConfig(
       quality.toLowerCase(),
       supports.toLowerCase()

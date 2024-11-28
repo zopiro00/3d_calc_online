@@ -26,7 +26,7 @@ body {
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
-  gap: 16px;
+  gap: 10px;
 }
 
 .preview-column {
@@ -46,4 +46,29 @@ body {
   .preview-column {
     height: 300px; /* Optional: Fixed height for preview on small screens */
   }
+}
+
+button {
+  margin: 5px;
+  width: 200px;
+  background-color: orange;
+  min-height: 30px;
+  border: none;
+  color: black;
+  border-radius: 15px;
+}
+
+button:disabled {
+  background-color: lightgray;
+  border: none;
+  color: black;
+}
+
+select {
+  background-color: orange;
+  border-radius: 15px;
+  padding: 5px;
+  margin: 5px 10px;
+  width: 15%;
+  height: 30px;
 }
